@@ -63,6 +63,17 @@
             color: #ff4444;
             font-size: 18px;
         }
+        
+        .powerups {
+            display: flex;
+            gap: 3px;
+            margin-left: 10px;
+        }
+        
+        .powerup-icon {
+            font-size: 16px;
+            opacity: 0.9;
+        }
     </style>
 </head>
 <body>
@@ -72,7 +83,8 @@
     <div id="info">
         <div>Players: <span id="playerCount">1</span></div>
         <div id="playersLives"></div>
-        <div class="controls">Use WASD to move, SPACE to place bomb</div>
+        <div class="controls">Use WASD to move, SPACE to place bomb<br>
+        Shift+Click to teleport, Ctrl+Click to build wall</div>
     </div>
     
     <script src="/socket.io/socket.io.js"></script>

@@ -14,6 +14,8 @@ class Game {
         this.bombs = {};
         this.explosions = {};
         this.walls = {};
+        this.powerups = {};
+        this.fireTrails = {};
         this.playerId = null;
         
         // Input handling
@@ -38,6 +40,29 @@ class Game {
         document.addEventListener('keyup', (e) => {
             this.keys[e.code] = false;
             this.stopContinuousMovement();
+        });
+        
+        // Handle mouse clicks for teleport and wall building
+        this.canvas.addEventListener('click', (e) => {
+            const rect = this.canvas.getBoundingClientRect();
+            const canvasX = e.clientX - rect.left;
+            const canvasY = e.clientY - rect.top;
+            
+            // Convert canvas coordinates to grid coordinates
+            const gridX = Math.floor(canvasX / this.CELL_SIZE);
+            const gridY = Math.floor(canvasY / this.CELL_SIZE);
+            
+            const player = this.players[this.playerId];
+            if (!player) return;
+            
+            // Check if player has teleport power-up (holding Shift to teleport)
+            if (e.shiftKey && player.powerups?.teleport) {
+                this.socket.emit('teleport', { x: gridX, y: gridY });
+            }
+            // Check if player has wall builder power-up (holding Ctrl to build wall)
+            else if (e.ctrlKey && player.powerups?.wall_builder) {
+                this.socket.emit('buildWall', { x: gridX, y: gridY });
+            }
         });
     }
     
@@ -127,6 +152,8 @@ class Game {
             this.bombs = data.gameState.bombs;
             this.explosions = data.gameState.explosions;
             this.walls = data.gameState.walls;
+            this.powerups = data.gameState.powerups || {};
+            this.fireTrails = data.gameState.fireTrails || {};
             
             document.getElementById('playerCount').textContent = Object.keys(this.players).length;
             this.updateLivesDisplay();
@@ -138,6 +165,8 @@ class Game {
             this.bombs = data.bombs;
             this.explosions = data.explosions;
             this.walls = data.walls;
+            this.powerups = data.powerups || {};
+            this.fireTrails = data.fireTrails || {};
             
             document.getElementById('playerCount').textContent = Object.keys(this.players).length;
             this.updateLivesDisplay();
@@ -147,6 +176,23 @@ class Game {
         this.socket.on('disconnect', () => {
             console.log('Disconnected from server');
         });
+    }
+    
+    getPowerupDefinition(type) {
+        const definitions = {
+            'mega_bomb': { emoji: '💥', color: '#FF6B35', name: 'Mega Bomb' },
+            'tornado_bomb': { emoji: '🌪️', color: '#4ECDC4', name: 'Tornado Bomb' },
+            'fire_trail': { emoji: '🔥', color: '#FF4757', name: 'Fire Trail' },
+            'ghost_mode': { emoji: '👻', color: '#E0E0E0', name: 'Ghost Mode' },
+            'teleport': { emoji: '🌀', color: '#9B59B6', name: 'Teleport' },
+            'extra_life': { emoji: '💖', color: '#E74C3C', name: 'Extra Life' },
+            'force_field': { emoji: '🛡️', color: '#3498DB', name: 'Force Field' },
+            'swap': { emoji: '🔄', color: '#F39C12', name: 'Swap' },
+            'scramble': { emoji: '🎲', color: '#8E44AD', name: 'Scramble' },
+            'magnet': { emoji: '🧲', color: '#E67E22', name: 'Magnet' },
+            'wall_builder': { emoji: '🧱', color: '#95A5A6', name: 'Wall Builder' }
+        };
+        return definitions[type];
     }
     
     updateLivesDisplay() {
@@ -182,8 +228,26 @@ class Game {
                 heartsDiv.appendChild(heart);
             }
             
+            // Show active power-ups
+            const powerupsDiv = document.createElement('div');
+            powerupsDiv.className = 'powerups';
+            
+            if (player.powerups && Object.keys(player.powerups).length > 0) {
+                Object.keys(player.powerups).forEach(powerupType => {
+                    const powerupDef = this.getPowerupDefinition(powerupType);
+                    if (powerupDef) {
+                        const powerupSpan = document.createElement('span');
+                        powerupSpan.className = 'powerup-icon';
+                        powerupSpan.textContent = powerupDef.emoji;
+                        powerupSpan.title = powerupDef.name;
+                        powerupsDiv.appendChild(powerupSpan);
+                    }
+                });
+            }
+            
             playerDiv.appendChild(colorDiv);
             playerDiv.appendChild(heartsDiv);
+            playerDiv.appendChild(powerupsDiv);
             livesContainer.appendChild(playerDiv);
         });
     }
@@ -225,22 +289,96 @@ class Game {
             );
         });
         
+        // Draw fire trails (under everything)
+        Object.values(this.fireTrails).forEach(trail => {
+            this.ctx.fillStyle = '#FF4757';
+            this.ctx.fillRect(
+                trail.x * this.CELL_SIZE + 2,
+                trail.y * this.CELL_SIZE + 2,
+                this.CELL_SIZE - 4,
+                this.CELL_SIZE - 4
+            );
+        });
+        
         // Draw players (underneath bombs)
         Object.values(this.players).forEach(player => {
             if (!player.alive) return; // Don't draw dead players
             
+            const x = player.x * this.CELL_SIZE + 4;
+            const y = player.y * this.CELL_SIZE + 4;
+            const size = this.CELL_SIZE - 8;
+            
+            // Base player color
             this.ctx.fillStyle = player.color;
-            this.ctx.fillRect(
-                player.x * this.CELL_SIZE + 4,
-                player.y * this.CELL_SIZE + 4,
-                this.CELL_SIZE - 8,
-                this.CELL_SIZE - 8
-            );
+            this.ctx.fillRect(x, y, size, size);
+            
+            // Special effects for power-ups
+            if (player.powerups) {
+                // Ghost mode - semi-transparent
+                if (player.powerups.ghost_mode) {
+                    this.ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+                    this.ctx.fillRect(x, y, size, size);
+                }
+                
+                // Force field - blue glow
+                if (player.powerups.force_field) {
+                    this.ctx.strokeStyle = '#3498DB';
+                    this.ctx.lineWidth = 3;
+                    this.ctx.strokeRect(x - 2, y - 2, size + 4, size + 4);
+                }
+                
+                // Magnet - orange glow
+                if (player.powerups.magnet) {
+                    this.ctx.strokeStyle = '#E67E22';
+                    this.ctx.lineWidth = 2;
+                    this.ctx.setLineDash([5, 3]);
+                    this.ctx.strokeRect(x - 1, y - 1, size + 2, size + 2);
+                    this.ctx.setLineDash([]);
+                }
+            }
+        });
+        
+        // Draw power-ups (before bombs)
+        Object.values(this.powerups).forEach(powerup => {
+            // Get power-up definition for colors/emojis
+            const powerupDef = this.getPowerupDefinition(powerup.type);
+            if (powerupDef) {
+                // Draw background circle
+                this.ctx.fillStyle = powerupDef.color;
+                this.ctx.beginPath();
+                this.ctx.arc(
+                    powerup.x * this.CELL_SIZE + this.CELL_SIZE / 2,
+                    powerup.y * this.CELL_SIZE + this.CELL_SIZE / 2,
+                    this.CELL_SIZE / 3,
+                    0,
+                    2 * Math.PI
+                );
+                this.ctx.fill();
+                
+                // Draw emoji/text
+                this.ctx.font = `${this.CELL_SIZE / 2}px Arial`;
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillStyle = '#FFF';
+                this.ctx.fillText(
+                    powerupDef.emoji,
+                    powerup.x * this.CELL_SIZE + this.CELL_SIZE / 2,
+                    powerup.y * this.CELL_SIZE + this.CELL_SIZE / 2
+                );
+            }
         });
         
         // Draw bombs (on top of players)
         Object.values(this.bombs).forEach(bomb => {
-            this.ctx.fillStyle = '#222';
+            // Different bomb visuals based on type
+            if (bomb.type === 'mega') {
+                this.ctx.fillStyle = '#FF6B35'; // Orange for mega bomb
+            } else if (bomb.type === 'tornado') {
+                this.ctx.fillStyle = '#4ECDC4'; // Teal for tornado bomb
+            } else {
+                this.ctx.fillStyle = '#222'; // Default black
+            }
+            
             this.ctx.fillRect(
                 bomb.x * this.CELL_SIZE + 6,
                 bomb.y * this.CELL_SIZE + 6,
