@@ -170,7 +170,13 @@ class Game {
         
         // Draw explosions
         Object.values(this.explosions).forEach(explosion => {
-            this.ctx.fillStyle = '#FFA500';
+            // Calculate fade based on age (explosions last 500ms)
+            const age = Date.now() - (explosion.createdAt || Date.now());
+            const maxAge = 500;
+            const fadeProgress = Math.min(age / maxAge, 1);
+            const alpha = 1 - fadeProgress;
+            
+            this.ctx.fillStyle = `rgba(255, 165, 0, ${alpha})`;
             this.ctx.fillRect(
                 explosion.x * this.CELL_SIZE + 2,
                 explosion.y * this.CELL_SIZE + 2,

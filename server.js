@@ -121,13 +121,15 @@ function placeBomb(playerId, x, y) {
 function explodeBomb(bomb) {
     if (!bomb) return;
     
+    const explosionPositions = [];
+    
     // Create explosion at bomb position
-    const explosionId = `explosion_${Date.now()}_${Math.random()}`;
-    gameState.explosions[`${bomb.x},${bomb.y}`] = {
-        id: explosionId,
+    const centerPos = `${bomb.x},${bomb.y}`;
+    explosionPositions.push(centerPos);
+    gameState.explosions[centerPos] = {
         x: bomb.x,
         y: bomb.y,
-        timer: 500
+        createdAt: Date.now()
     };
     
     // Create explosions in 4 directions
@@ -148,11 +150,11 @@ function explodeBomb(bomb) {
             }
             
             // Create explosion
-            gameState.explosions[`${x},${y}`] = {
-                id: `explosion_${Date.now()}_${Math.random()}_${x}_${y}`,
+            explosionPositions.push(wallKey);
+            gameState.explosions[wallKey] = {
                 x: x,
                 y: y,
-                timer: 500
+                createdAt: Date.now()
             };
             
             // Destroy destructible wall and stop
@@ -163,13 +165,10 @@ function explodeBomb(bomb) {
         }
     });
     
-    // Remove explosions after timer
+    // Remove these specific explosions after timer
     setTimeout(() => {
-        Object.keys(gameState.explosions).forEach(key => {
-            const explosion = gameState.explosions[key];
-            if (explosion && explosion.timer <= 0) {
-                delete gameState.explosions[key];
-            }
+        explosionPositions.forEach(pos => {
+            delete gameState.explosions[pos];
         });
         broadcastGameState();
     }, 500);
