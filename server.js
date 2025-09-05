@@ -11,12 +11,15 @@ const PORT = process.env.PORT || 3000;
 
 // Game state
 const gameState = {
-    players: {},
+    players: {}, // keyed by persistent player ID
     bombs: {},
     explosions: {},
     walls: {},
     gameStarted: false
 };
+
+// Map socket IDs to persistent player IDs
+const socketToPlayer = {};
 
 // Game constants
 const CELL_SIZE = 32;
@@ -32,20 +35,11 @@ app.use(express.static(__dirname));
 function initializeWalls() {
     gameState.walls = {};
     
-    // Create border walls
-    for (let x = 0; x < COLS; x++) {
-        gameState.walls[`${x},0`] = { x, y: 0, destructible: false };
-        gameState.walls[`${x},${ROWS-1}`] = { x, y: ROWS-1, destructible: false };
-    }
+    // No border walls for wrap-around world!
     
-    for (let y = 0; y < ROWS; y++) {
-        gameState.walls[`0,${y}`] = { x: 0, y, destructible: false };
-        gameState.walls[`${COLS-1},${y}`] = { x: COLS-1, y, destructible: false };
-    }
-    
-    // Create some fixed walls
-    for (let x = 2; x < COLS - 2; x += 2) {
-        for (let y = 2; y < ROWS - 2; y += 2) {
+    // Create some fixed walls (avoid edges since they're now open)
+    for (let x = 1; x < COLS - 1; x += 2) {
+        for (let y = 1; y < ROWS - 1; y += 2) {
             gameState.walls[`${x},${y}`] = { x, y, destructible: false };
         }
     }
@@ -64,13 +58,20 @@ function initializeWalls() {
     }
 }
 
-// Get spawn position for new player
+// Wrap coordinate to handle world wrap-around
+function wrapCoordinate(value, max) {
+    while (value < 0) value += max;
+    while (value >= max) value -= max;
+    return value;
+}
+
+// Get spawn position for new player (avoid edges for cleaner spawning)
 function getSpawnPosition() {
     const positions = [
-        { x: 1, y: 1 },
-        { x: COLS - 2, y: 1 },
-        { x: 1, y: ROWS - 2 },
-        { x: COLS - 2, y: ROWS - 2 }
+        { x: 2, y: 2 },
+        { x: COLS - 3, y: 2 },
+        { x: 2, y: ROWS - 3 },
+        { x: COLS - 3, y: ROWS - 3 }
     ];
     
     // Return first available position
@@ -82,14 +83,16 @@ function getSpawnPosition() {
         }
     }
     
-    // Fallback to random position
-    return { x: 1, y: 1 };
+    // Fallback to center position
+    return { x: Math.floor(COLS / 2), y: Math.floor(ROWS / 2) };
 }
 
-// Check if position is valid (no walls, bombs, or out of bounds)
+// Check if position is valid (no walls, bombs) - wrap-around world has no bounds
 function isValidPosition(x, y) {
-    if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return false;
-    const key = `${x},${y}`;
+    // Wrap coordinates
+    const wrappedX = wrapCoordinate(x, COLS);
+    const wrappedY = wrapCoordinate(y, ROWS);
+    const key = `${wrappedX},${wrappedY}`;
     return !gameState.walls[key] && !gameState.bombs[key];
 }
 
@@ -136,34 +139,45 @@ function explodeBomb(bomb) {
     const directions = [[0, 1], [0, -1], [1, 0], [-1, 0]];
     
     directions.forEach(([dx, dy]) => {
+        console.log(`\nBomb at (${bomb.x}, ${bomb.y}) exploding in direction (${dx}, ${dy})`);
+        let stopped = false;
+        
         for (let i = 1; i <= bomb.range; i++) {
+            if (stopped) break;
+            
             const x = bomb.x + dx * i;
             const y = bomb.y + dy * i;
-            const wallKey = `${x},${y}`;
             
-            // Stop if out of bounds
-            if (x < 0 || x >= COLS || y < 0 || y >= ROWS) break;
+            // Apply wrap-around to explosion coordinates
+            const wrappedX = wrapCoordinate(x, COLS);
+            const wrappedY = wrapCoordinate(y, ROWS);
+            const wallKey = `${wrappedX},${wrappedY}`;
             
-            // Stop if hit indestructible wall
-            if (gameState.walls[wallKey] && !gameState.walls[wallKey].destructible) {
-                break;
-            }
+            console.log(`  Range ${i}: (${x}, ${y}) -> wrapped (${wrappedX}, ${wrappedY})`);
             
-            // Create explosion
+            // Create explosion at wrapped position (always create, regardless of obstacles)
             explosionPositions.push(wallKey);
             gameState.explosions[wallKey] = {
-                x: x,
-                y: y,
+                x: wrappedX,
+                y: wrappedY,
                 createdAt: Date.now()
             };
             
-            // Destroy destructible wall and stop
-            if (gameState.walls[wallKey] && gameState.walls[wallKey].destructible) {
-                delete gameState.walls[wallKey];
-                break;
+            // Check for walls after creating explosion
+            if (gameState.walls[wallKey]) {
+                console.log(`    Hit wall at (${wrappedX}, ${wrappedY}) - destructible: ${gameState.walls[wallKey].destructible}`);
+                if (gameState.walls[wallKey].destructible) {
+                    // Destroy destructible wall and stop further explosions in this direction
+                    delete gameState.walls[wallKey];
+                }
+                // Stop explosion in this direction (but explosion was already created at this position)
+                stopped = true;
             }
         }
     });
+    
+    // Check for player deaths from explosions
+    checkPlayerExplosionCollisions(explosionPositions);
     
     // Remove these specific explosions after timer
     setTimeout(() => {
@@ -172,6 +186,30 @@ function explodeBomb(bomb) {
         });
         broadcastGameState();
     }, 500);
+}
+
+// Check for player deaths from explosions
+function checkPlayerExplosionCollisions(explosionPositions) {
+    Object.values(gameState.players).forEach(player => {
+        if (!player.alive) return;
+        
+        const playerPos = `${player.x},${player.y}`;
+        if (explosionPositions.includes(playerPos)) {
+            // Player hit by explosion
+            player.lives--;
+            
+            if (player.lives > 0) {
+                // Respawn player
+                const spawnPos = getSpawnPosition();
+                player.x = spawnPos.x;
+                player.y = spawnPos.y;
+                player.alive = true;
+            } else {
+                // Player eliminated
+                player.alive = false;
+            }
+        }
+    });
 }
 
 // Broadcast game state to all clients
@@ -193,53 +231,77 @@ io.on('connection', (socket) => {
         initializeWalls();
     }
     
-    // Add new player
-    const spawnPos = getSpawnPosition();
-    const playerColors = ['#ff4444', '#44ff44', '#4444ff', '#ffff44'];
-    const playerCount = Object.keys(gameState.players).length;
-    
-    gameState.players[socket.id] = {
-        id: socket.id,
-        x: spawnPos.x,
-        y: spawnPos.y,
-        color: playerColors[playerCount % playerColors.length],
-        alive: true
-    };
-    
-    // Send initial game state to new player
-    socket.emit('init', {
-        playerId: socket.id,
-        gameState: {
-            players: gameState.players,
-            bombs: gameState.bombs,
-            explosions: gameState.explosions,
-            walls: gameState.walls
+    // Handle persistent player ID setup
+    socket.on('setPlayerId', (data) => {
+        const { persistentId } = data;
+        socketToPlayer[socket.id] = persistentId;
+        
+        // Check if player already exists (reconnection)
+        if (!gameState.players[persistentId]) {
+            // Add new player
+            const spawnPos = getSpawnPosition();
+            const playerColors = ['#ff4444', '#44ff44', '#4444ff', '#ffff44'];
+            const playerCount = Object.keys(gameState.players).length; // Count BEFORE adding new player
+            
+            gameState.players[persistentId] = {
+                id: persistentId,
+                x: spawnPos.x,
+                y: spawnPos.y,
+                color: playerColors[playerCount % playerColors.length],
+                alive: true,
+                lives: 5
+            };
+            
+            console.log(`New player ${persistentId} created with color ${playerColors[playerCount % playerColors.length]} at position (${spawnPos.x}, ${spawnPos.y})`);
+        } else {
+            console.log(`Existing player ${persistentId} reconnected with ${gameState.players[persistentId].lives} lives`);
         }
+        
+        // Send initial game state to player
+        socket.emit('init', {
+            playerId: persistentId,
+            gameState: {
+                players: gameState.players,
+                bombs: gameState.bombs,
+                explosions: gameState.explosions,
+                walls: gameState.walls
+            }
+        });
+        
+        // Broadcast updated game state to all players
+        broadcastGameState();
     });
-    
-    // Broadcast updated game state to all players
-    broadcastGameState();
     
     // Handle player movement
     socket.on('move', (data) => {
-        const player = gameState.players[socket.id];
+        const persistentId = socketToPlayer[socket.id];
+        if (!persistentId) return;
+        
+        const player = gameState.players[persistentId];
         if (!player || !player.alive) return;
         
         const { x, y } = data;
+        // Apply wrap-around to coordinates
+        const wrappedX = wrapCoordinate(x, COLS);
+        const wrappedY = wrapCoordinate(y, ROWS);
+        
         if (isValidPosition(x, y)) {
-            player.x = x;
-            player.y = y;
+            player.x = wrappedX;
+            player.y = wrappedY;
             broadcastGameState();
         }
     });
     
     // Handle bomb placement
     socket.on('placeBomb', (data) => {
-        const player = gameState.players[socket.id];
+        const persistentId = socketToPlayer[socket.id];
+        if (!persistentId) return;
+        
+        const player = gameState.players[persistentId];
         if (!player || !player.alive) return;
         
         const { x, y } = data;
-        if (placeBomb(socket.id, x, y)) {
+        if (placeBomb(persistentId, x, y)) {
             broadcastGameState();
         }
     });
@@ -247,8 +309,8 @@ io.on('connection', (socket) => {
     // Handle disconnection
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
-        delete gameState.players[socket.id];
-        broadcastGameState();
+        // Don't delete player data on disconnect - keep it for reconnection
+        delete socketToPlayer[socket.id];
     });
 });
 

@@ -62,16 +62,16 @@ class Game {
         let moved = false;
         
         if (keyCode === 'KeyW' || keyCode === 'ArrowUp') {
-            newY = Math.max(0, player.y - 1);
+            newY = player.y - 1; // Let server handle wrap-around
             moved = true;
         } else if (keyCode === 'KeyS' || keyCode === 'ArrowDown') {
-            newY = Math.min(this.ROWS - 1, player.y + 1);
+            newY = player.y + 1; // Let server handle wrap-around
             moved = true;
         } else if (keyCode === 'KeyA' || keyCode === 'ArrowLeft') {
-            newX = Math.max(0, player.x - 1);
+            newX = player.x - 1; // Let server handle wrap-around
             moved = true;
         } else if (keyCode === 'KeyD' || keyCode === 'ArrowRight') {
-            newX = Math.min(this.COLS - 1, player.x + 1);
+            newX = player.x + 1; // Let server handle wrap-around
             moved = true;
         } else if (keyCode === 'Space') {
             this.socket.emit('placeBomb', { x: player.x, y: player.y });
@@ -106,9 +106,18 @@ class Game {
     connectToServer() {
         this.socket = io();
         
+        // Get or create persistent player ID (use sessionStorage so each tab is a different player)
+        let persistentPlayerId = sessionStorage.getItem('bombermanPlayerId');
+        if (!persistentPlayerId) {
+            persistentPlayerId = 'player_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+            sessionStorage.setItem('bombermanPlayerId', persistentPlayerId);
+        }
+        
         // Handle connection
         this.socket.on('connect', () => {
             console.log('Connected to server');
+            // Send persistent ID to server
+            this.socket.emit('setPlayerId', { persistentId: persistentPlayerId });
         });
         
         // Receive initial game state
@@ -120,6 +129,7 @@ class Game {
             this.walls = data.gameState.walls;
             
             document.getElementById('playerCount').textContent = Object.keys(this.players).length;
+            this.updateLivesDisplay();
         });
         
         // Receive game state updates
@@ -130,6 +140,7 @@ class Game {
             this.walls = data.walls;
             
             document.getElementById('playerCount').textContent = Object.keys(this.players).length;
+            this.updateLivesDisplay();
         });
         
         // Handle disconnection
@@ -138,7 +149,44 @@ class Game {
         });
     }
     
-    
+    updateLivesDisplay() {
+        const livesContainer = document.getElementById('playersLives');
+        livesContainer.innerHTML = '';
+        
+        Object.values(this.players).forEach(player => {
+            const playerDiv = document.createElement('div');
+            playerDiv.className = 'player-lives';
+            
+            // Player color indicator
+            const colorDiv = document.createElement('div');
+            colorDiv.className = 'player-color';
+            colorDiv.style.backgroundColor = player.color;
+            
+            // Hearts display
+            const heartsDiv = document.createElement('div');
+            heartsDiv.className = 'hearts';
+            
+            for (let i = 0; i < player.lives; i++) {
+                const heart = document.createElement('span');
+                heart.className = 'heart';
+                heart.textContent = '❤️';
+                heartsDiv.appendChild(heart);
+            }
+            
+            // Show empty hearts for lost lives
+            for (let i = player.lives; i < 5; i++) {
+                const heart = document.createElement('span');
+                heart.className = 'heart';
+                heart.style.opacity = '0.2';
+                heart.textContent = '❤️';
+                heartsDiv.appendChild(heart);
+            }
+            
+            playerDiv.appendChild(colorDiv);
+            playerDiv.appendChild(heartsDiv);
+            livesContainer.appendChild(playerDiv);
+        });
+    }
     
     update(deltaTime) {
         // Client-side updates are minimal since server handles game logic
@@ -179,6 +227,8 @@ class Game {
         
         // Draw players (underneath bombs)
         Object.values(this.players).forEach(player => {
+            if (!player.alive) return; // Don't draw dead players
+            
             this.ctx.fillStyle = player.color;
             this.ctx.fillRect(
                 player.x * this.CELL_SIZE + 4,
