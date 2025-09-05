@@ -7,7 +7,7 @@ class Game {
         // Game constants
         this.CELL_SIZE = 32;
         this.COLS = Math.floor(this.canvas.width / this.CELL_SIZE);
-        this.ROWS = Math.floor(this.canvas.height / this.CELL_SIZE);
+        this.ROWS = Math.floor(this.canvas.height / this.CELL_SIZE) + 1; // Add 1 to fill unused space
         
         // Game state
         this.players = {};
@@ -18,8 +18,9 @@ class Game {
         
         // Input handling
         this.keys = {};
+        this.continuousMovement = null; // Interval for continuous movement
         this.lastMoveTime = 0;
-        this.moveDelay = 100; // ms between moves
+        this.moveDelay = 80; // ms between moves when holding
         
         this.initializeInput();
         this.connectToServer();
@@ -28,12 +29,78 @@ class Game {
     
     initializeInput() {
         document.addEventListener('keydown', (e) => {
-            this.keys[e.code] = true;
+            if (!this.keys[e.code]) {
+                this.keys[e.code] = true;
+                this.handleKeyPress(e.code);
+            }
         });
         
         document.addEventListener('keyup', (e) => {
             this.keys[e.code] = false;
+            this.stopContinuousMovement();
         });
+    }
+    
+    handleKeyPress(keyCode) {
+        // Move immediately on key press
+        this.processMovement(keyCode);
+        
+        // Start continuous movement after delay
+        setTimeout(() => {
+            if (this.keys[keyCode]) { // Still pressed after delay
+                this.startContinuousMovement(keyCode);
+            }
+        }, 200);
+    }
+    
+    processMovement(keyCode) {
+        const player = this.players[this.playerId];
+        if (!player || !this.socket) return;
+        
+        let newX = player.x;
+        let newY = player.y;
+        let moved = false;
+        
+        if (keyCode === 'KeyW' || keyCode === 'ArrowUp') {
+            newY = Math.max(0, player.y - 1);
+            moved = true;
+        } else if (keyCode === 'KeyS' || keyCode === 'ArrowDown') {
+            newY = Math.min(this.ROWS - 1, player.y + 1);
+            moved = true;
+        } else if (keyCode === 'KeyA' || keyCode === 'ArrowLeft') {
+            newX = Math.max(0, player.x - 1);
+            moved = true;
+        } else if (keyCode === 'KeyD' || keyCode === 'ArrowRight') {
+            newX = Math.min(this.COLS - 1, player.x + 1);
+            moved = true;
+        } else if (keyCode === 'Space') {
+            this.socket.emit('placeBomb', { x: player.x, y: player.y });
+            return;
+        }
+        
+        if (moved) {
+            this.socket.emit('move', { x: newX, y: newY });
+            this.lastMoveTime = Date.now();
+        }
+    }
+    
+    startContinuousMovement(keyCode) {
+        this.stopContinuousMovement(); // Clear any existing interval
+        
+        this.continuousMovement = setInterval(() => {
+            if (this.keys[keyCode]) {
+                this.processMovement(keyCode);
+            } else {
+                this.stopContinuousMovement();
+            }
+        }, this.moveDelay);
+    }
+    
+    stopContinuousMovement() {
+        if (this.continuousMovement) {
+            clearInterval(this.continuousMovement);
+            this.continuousMovement = null;
+        }
     }
     
     connectToServer() {
@@ -72,43 +139,6 @@ class Game {
     }
     
     
-    handleInput() {
-        const now = Date.now();
-        if (now - this.lastMoveTime < this.moveDelay) return;
-        
-        const player = this.players[this.playerId];
-        if (!player || !this.socket) return;
-        
-        let moved = false;
-        let newX = player.x;
-        let newY = player.y;
-        
-        if (this.keys['KeyW'] || this.keys['ArrowUp']) {
-            newY = Math.max(0, player.y - 1);
-            moved = true;
-        } else if (this.keys['KeyS'] || this.keys['ArrowDown']) {
-            newY = Math.min(this.ROWS - 1, player.y + 1);
-            moved = true;
-        } else if (this.keys['KeyA'] || this.keys['ArrowLeft']) {
-            newX = Math.max(0, player.x - 1);
-            moved = true;
-        } else if (this.keys['KeyD'] || this.keys['ArrowRight']) {
-            newX = Math.min(this.COLS - 1, player.x + 1);
-            moved = true;
-        }
-        
-        // Send movement to server (server will validate)
-        if (moved) {
-            this.socket.emit('move', { x: newX, y: newY });
-            this.lastMoveTime = now;
-        }
-        
-        // Place bomb
-        if (this.keys['Space']) {
-            this.socket.emit('placeBomb', { x: player.x, y: player.y });
-            this.keys['Space'] = false; // Prevent spam
-        }
-    }
     
     update(deltaTime) {
         // Client-side updates are minimal since server handles game logic
@@ -147,7 +177,18 @@ class Game {
             );
         });
         
-        // Draw bombs
+        // Draw players (underneath bombs)
+        Object.values(this.players).forEach(player => {
+            this.ctx.fillStyle = player.color;
+            this.ctx.fillRect(
+                player.x * this.CELL_SIZE + 4,
+                player.y * this.CELL_SIZE + 4,
+                this.CELL_SIZE - 8,
+                this.CELL_SIZE - 8
+            );
+        });
+        
+        // Draw bombs (on top of players)
         Object.values(this.bombs).forEach(bomb => {
             this.ctx.fillStyle = '#222';
             this.ctx.fillRect(
@@ -168,7 +209,7 @@ class Game {
             );
         });
         
-        // Draw explosions
+        // Draw explosions (on top of everything)
         Object.values(this.explosions).forEach(explosion => {
             // Calculate fade based on age (explosions last 500ms)
             const age = Date.now() - (explosion.createdAt || Date.now());
@@ -184,17 +225,6 @@ class Game {
                 this.CELL_SIZE - 4
             );
         });
-        
-        // Draw players
-        Object.values(this.players).forEach(player => {
-            this.ctx.fillStyle = player.color;
-            this.ctx.fillRect(
-                player.x * this.CELL_SIZE + 4,
-                player.y * this.CELL_SIZE + 4,
-                this.CELL_SIZE - 8,
-                this.CELL_SIZE - 8
-            );
-        });
     }
     
     gameLoop() {
@@ -202,7 +232,6 @@ class Game {
         const deltaTime = now - (this.lastFrameTime || now);
         this.lastFrameTime = now;
         
-        this.handleInput();
         this.update(deltaTime);
         this.render();
         

@@ -23,7 +23,7 @@ const CELL_SIZE = 32;
 const CANVAS_WIDTH = 800;
 const CANVAS_HEIGHT = 600;
 const COLS = Math.floor(CANVAS_WIDTH / CELL_SIZE);
-const ROWS = Math.floor(CANVAS_HEIGHT / CELL_SIZE);
+const ROWS = Math.floor(CANVAS_HEIGHT / CELL_SIZE) + 1; // Add 1 to fill unused space
 
 // Serve static files
 app.use(express.static(__dirname));
